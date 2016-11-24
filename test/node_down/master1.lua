@@ -1,7 +1,8 @@
 #!/usr/bin/env tarantool
+local os = require('os')
+local fiber = require('fiber')
+
 shard = require('shard')
-os = require('os')
-fiber = require('fiber')
 
 local cfg = {
     servers = {
@@ -26,7 +27,7 @@ require('console').listen(os.getenv('ADMIN'))
 if not box.space.demo then
     box.schema.user.create(cfg.login, { password = cfg.password })
     box.schema.user.grant(cfg.login, 'read,write,execute', 'universe')
-	
+
     local demo = box.schema.create_space('demo')
     demo:create_index('primary', {type = 'tree', parts = {1, 'num'}})
 end

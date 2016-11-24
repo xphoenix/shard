@@ -2,5 +2,5 @@
 *.snap
 *.xlog
 *.log
-test/vari
+test/var
 VERSION

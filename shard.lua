@@ -1,12 +1,12 @@
-local fiber = require('fiber')
 local log = require('log')
-local digest = require('digest')
-local msgpack = require('msgpack')
-local remote = require('net.box')
-local yaml = require('yaml')
-local uuid = require('uuid')
 local json = require('json')
-local lib_pool = require('connpool')
+local uuid = require('uuid')
+local yaml = require('yaml')
+local fiber = require('fiber')
+local digest = require('digest')
+local remote = require('net.box')
+local msgpack = require('msgpack')
+local connpool = require('connpool')
 
 local shards = {}
 local shards_n
@@ -17,7 +17,7 @@ local HEARTBEAT_TIMEOUT = 500
 local DEAD_TIMEOUT = 10
 local RECONNECT_AFTER = msgpack.NULL
 
-local pool = lib_pool.new()
+local pool = connpool.new()
 local STATE_NEW = 0
 local STATE_INPROGRESS = 1
 local STATE_HANDLED = 2
@@ -69,7 +69,7 @@ local function create_queue(fun, workers)
     local ch = fiber.channel(workers)
     local chj = fiber.channel(workers)
     local self = setmetatable({ ch = ch, chj = chj, workers = workers, fun=fun }, queue_mt)
-    for i=1,workers do
+    for i = 1, workers do
         fiber.create(queue_handler, self, fun)
     end
     return self
@@ -91,7 +91,7 @@ local function queue(fun, workers)
     if len > 0 then
         local result = list[len]
         list[len] = nil
-	list.n = list.n - 1
+        list.n = list.n - 1
         return result
     end
     return create_queue(fun, workers)
@@ -148,7 +148,7 @@ end
 
 -- base remote operation call
 local function single_call(self, space, server, operation, ...)
-    result = nil
+    local result = nil
     local status, reason = pcall(function(...)
         self = server.conn:timeout(5 * REMOTE_TIMEOUT).space[space]
         result = self[operation](self, ...)
@@ -165,7 +165,7 @@ end
 -- shards request function
 local function request(self, space, operation, tuple_id, ...)
     local result = {}
-    k = 1
+    local k = 1
     for i, server in ipairs(shard(tuple_id)) do
         result[k] = single_call(self, space, server, operation, ...)
         k = k + 1
@@ -187,12 +187,12 @@ end
 
 local function find_server_in_shard(shard, hint)
     local srv = shard[hint]
-    if server_is_ok(srv) then
+    if pool:server_is_ok(srv) then
         return srv
     end
-    for i=1,redundancy do
+    for i = 1, redundancy do
         srv = shard[i]
-        if server_is_ok(srv) then
+        if pool:server_is_ok(srv) then
            return srv
         end
     end
@@ -224,8 +224,8 @@ local function q_select(self, space, index, args)
     end
     local zone = math.floor(math.random() * redundancy) + 1
     local tuples = {}
-        local q = queue(broadcast_select, shards_n)
-    for i=1,shards_n do
+    local q = queue(broadcast_select, shards_n)
+    for i = 1, shards_n do
         local srv = find_server_in_shard(shards[i], zone)
         local task = {server = srv, space = space, index = index,
                       args = args, result = tuples }
@@ -248,7 +248,7 @@ local function q_call(proc, args)
         local q = queue(broadcast_call, shards_n)
     local tuples = {}
     local zone = math.floor(math.random() * redundancy) + 1
-    for i=1,shards_n do
+    for i = 1, shards_n do
         local srv = find_server_in_shard(shards[i], zone)
         local task = { server = srv, proc = proc, args = args,
                       result = tuples }
@@ -267,7 +267,7 @@ function execute_operation(operation_id)
         operation_id, {{'=', 2, STATE_INPROGRESS}}
     )
     local batch = tuple[3]
-    for _, operation in ipairs(batch) do    
+    for _, operation in ipairs(batch) do
         local space = operation[1]
         local func_name = operation[2]
         local args = operation[3]
@@ -365,7 +365,7 @@ end
 local function check_operation(self, space, operation_id, tuple_id)
     local delay = 0.001
     operation_id = tostring(operation_id)
-    for i=1,100 do
+    for i = 1, 100 do
         local failed = nil
         local task_status = nil
         for _, server in pairs(shard(tuple_id)) do
@@ -384,7 +384,7 @@ local function check_operation(self, space, operation_id, tuple_id)
         end
         if failed == nil then
             if task_status == STATE_INPROGRESS then
-                q = queue(ack_operation, redundancy)
+                local q = queue(ack_operation, redundancy)
                 for _, server in ipairs(shard(tuple_id)) do
                     q:put({id=operation_id, server=server})
                 end
@@ -421,7 +421,8 @@ local function next_id(space)
         if tuple == nil then
             next_id = server_id
         else
-            next_id = math.floor((tuple[1]+ 2 * servers_n+1)/servers_n)*servers_n + server_id
+            next_id = math.floor((tuple[1] + 2 * shards_n + 1) / shards_n)
+            next_id = next_id * shards_n + server_id
         end
         _schema:insert{key, next_id}
     else
@@ -433,7 +434,7 @@ end
 
 -- default request wrappers for db operations
 local function insert(self, space, data)
-    tuple_id = data[1]
+    local tuple_id = data[1]
     return request(self, space, 'insert', tuple_id, data)
 end
 
@@ -448,7 +449,7 @@ local function select(self, space, tuple_id)
 end
 
 local function replace(self, space, data)
-    tuple_id = data[1]
+    local tuple_id = data[1]
     return request(self, space, 'replace', tuple_id, data)
 end
 
@@ -461,7 +462,7 @@ local function update(self, space, key, data)
 end
 
 local function q_insert(self, space, operation_id, data)
-    tuple_id = data[1]
+    local tuple_id = data[1]
     queue_request(self, space, 'insert', operation_id, tuple_id, data)
     return box.tuple.new(data)
 end
@@ -474,7 +475,7 @@ local function q_auto_increment(self, space, operation_id, data)
 end
 
 local function q_replace(self, space, operation_id, data)
-    tuple_id = data[1]
+    local tuple_id = data[1]
     queue_request(self, space, 'replace', operation_id, tuple_id, data)
     return box.tuple.new(data)
 end
@@ -629,7 +630,7 @@ local function enable_operations()
     -- set helpers
     shard_obj.check_operation = check_operation
     shard_obj.get_heartbeat = get_heartbeat
- 
+
     -- enable easy spaces access
     setmetatable(shard_obj, {
         __index = function (self, space)
@@ -753,7 +754,6 @@ shard_obj = {
 
     shards = shards,
     shards_n = shards_n,
-    servers_n = servers_n,
     len = len,
     redundancy = redundancy,
     is_connected = is_connected,
