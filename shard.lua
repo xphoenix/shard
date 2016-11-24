@@ -28,12 +28,12 @@ local shard_obj
 
 -- 1.6 and 1.7 netbox compat
 local compat = string.sub(require('tarantool').version, 1,3)
-local nb_call = 'call'
-if compat ~= '1.6' then
-    nb_call = 'call_16'
-end
+local nb_call = compat ~= '1.6' and 'call_16' or 'call'
 
---queue implementation
+-- -------------------------------------------------------------------------- --
+--                            Queue Implementation                            --
+-- -------------------------------------------------------------------------- --
+
 local function queue_handler(self, fun)
     fiber.name('queue/handler')
     while true do
@@ -59,7 +59,6 @@ local function queue_handler(self, fun)
     self.chj:put(true)
 end
 
-
 local queue_list = {}
 
 local queue_mt
@@ -76,25 +75,17 @@ local function create_queue(fun, workers)
 end
 
 local function free_queue(q)
-    local list = queue_list[q.fun]
-    list.n = list.n + 1
-    list[list.n] = q
+    table.insert(queue_list[q.fun], q)
 end
 
 local function queue(fun, workers)
-    if queue_list[fun] == nil then
-        queue_list[fun] = { n = 0 }
-    end
     local list = queue_list[fun]
-    local len = list.n
-
-    if len > 0 then
-        local result = list[len]
-        list[len] = nil
-        list.n = list.n - 1
-        return result
+    if list == nil then
+        queue_list[fun] = {}
+        return create_queue(fun, workers)
     end
-    return create_queue(fun, workers)
+    local result = table.remove(list)
+    return (result or create_queue(fun, workers))
 end
 
 local function queue_join(self)
@@ -124,6 +115,7 @@ queue_mt = {
         put = queue_put;
     }
 }
+
 
 -- main shards search function
 local function shard(key, include_dead)

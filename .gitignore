@@ -3,4 +3,5 @@
 *.xlog
 *.log
 test/var
+*.reject
 VERSION
