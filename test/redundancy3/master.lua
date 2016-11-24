@@ -33,6 +33,11 @@ if not box.space.demo then
     demo:create_index('primary', {type = 'tree', parts = {1, 'num'}})
 end
 
+if not box.space.multipart then
+    local mp = box.schema.create_space('multipart')
+    mp:create_index('primary', {type = 'tree', parts = {2, 'str', 1, 'num'}})
+end
+
 function print_shard_map()
     local result = {}
     for uri, hb_table in pairs(shard.get_heartbeat()) do

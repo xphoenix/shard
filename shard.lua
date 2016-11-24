@@ -1,3 +1,4 @@
+local fun = require('fun')
 local log = require('log')
 local json = require('json')
 local uuid = require('uuid')
@@ -116,23 +117,76 @@ queue_mt = {
     }
 }
 
+-- -------------------------------------------------------------------------- --
+--                          Extraction of primary key                         --
+-- -------------------------------------------------------------------------- --
+
+local function table_get(table, index)
+    return table[index]
+end
+
+local function extract_pk(space, tuple)
+    local parts = shard_obj.pk_extract[space]
+    if parts == nil then
+        log.debug('Failed to fetch primary key. Returning first field of tuple')
+        return tuple[1]
+    end
+    return fun.duplicate(tuple):zip(parts):map(table_get):totable()
+    -- local pk = {}
+    -- for _, v in ipairs(parts) do
+    --     table.insert(pk, tuple[v])
+    -- end
+    -- return pk
+end
+
+local function obtain_pk_parts()
+    local con = pool:one().conn
+    for sid, space in pairs(con.space) do
+        if type(sid) == 'string' then
+            -- convert parts to only field number (for speed increasing)
+            local parts = fun.iter(space.index[0].parts):zip(
+                fun.duplicate('fieldno')
+            ):map(table_get):totable()
+            -- local parts = {}
+            -- for _, v in ipairs(space.space.index[0].parts) do
+            --     table.insert(parts, v.fieldno)
+            -- end
+
+            shard_obj.pk_extract[space.id]   = parts
+            shard_obj.pk_extract[space.name] = parts
+        end
+    end
+end
+
+-- -------------------------------------------------------------------------- --
+--                              Sharding function                             --
+-- -------------------------------------------------------------------------- --
+
+local function shard_internal(key, depth)
+    local result = 0
+    if type(key) == 'number' then
+        result = key
+    elseif type(key) == 'string' then
+        result = digest.crc32(key)
+    elseif type(key) == 'table' then
+        for _, key_part in ipairs(key) do
+            result = result + shard_internal(key_part, 1)
+        end
+    end
+    if depth == 0 then
+        return 1 + digest.guava(result, shards_n)
+    end
+    return result
+end
 
 -- main shards search function
 local function shard(key, include_dead)
-    local num
-    if type(key) == 'number' then
-        num = key
-    else
-        num = digest.crc32(key)
-    end
-    local shard = shards[1 + digest.guava(num, shards_n)]
+    local shard = shards[shard_internal(key, 0)]
     local res = {}
-    local k = 1
     for i = 1, redundancy do
         local srv = shard[i]
         if pool:server_is_ok(srv) or include_dead then
-            res[k] = srv
-            k = k + 1
+            table.insert(res, srv)
         end
     end
     return res
@@ -426,7 +480,7 @@ end
 
 -- default request wrappers for db operations
 local function insert(self, space, data)
-    local tuple_id = data[1]
+    local tuple_id = extract_pk(space, data)
     return request(self, space, 'insert', tuple_id, data)
 end
 
@@ -441,7 +495,7 @@ local function select(self, space, tuple_id)
 end
 
 local function replace(self, space, data)
-    local tuple_id = data[1]
+    local tuple_id = extract_pk(space, data)
     return request(self, space, 'replace', tuple_id, data)
 end
 
@@ -454,7 +508,7 @@ local function update(self, space, key, data)
 end
 
 local function q_insert(self, space, operation_id, data)
-    local tuple_id = data[1]
+    local tuple_id = extract_pk(space, data)
     queue_request(self, space, 'insert', operation_id, tuple_id, data)
     return box.tuple.new(data)
 end
@@ -467,7 +521,7 @@ local function q_auto_increment(self, space, operation_id, data)
 end
 
 local function q_replace(self, space, operation_id, data)
-    local tuple_id = data[1]
+    local tuple_id = extract_pk(space, data)
     queue_request(self, space, 'replace', operation_id, tuple_id, data)
     return box.tuple.new(data)
 end
@@ -622,6 +676,7 @@ local function enable_operations()
     -- set helpers
     shard_obj.check_operation = check_operation
     shard_obj.get_heartbeat = get_heartbeat
+    shard_obj.pk_extract = {}
 
     -- enable easy spaces access
     setmetatable(shard_obj, {
@@ -698,8 +753,9 @@ local function init(cfg, callback)
 
     -- servers mappng
     shard_mapping(pool.servers)
-
     enable_operations()
+    obtain_pk_parts()
+
     log.info('Done')
     init_complete = true
     return true
